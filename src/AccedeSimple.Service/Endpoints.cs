@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using AccedeSimple.Domain;
-using AccedeSimple.Service.ProcessSteps;
 using AccedeSimple.Service.Services;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
@@ -38,12 +37,13 @@ public static class Endpoints
         // Get pending trip approval requests
         group.MapGet("/requests", async (
             [FromServices] StateStore store,
-            [FromServices] ILogger<Program> logger, 
+            [FromServices] ILogger<Program> logger,
             CancellationToken cancellationToken) =>
         {
             try
             {
-                var requests = store.Get("trip-requests").Value as List<TripRequest>;
+                // Trip requests are stored in StateStore by ProcessService when workflow reaches AdminApproval port
+                var requests = store.GetAs<List<TripRequest>>("trip-requests") ?? new List<TripRequest>();
                 return Results.Ok(requests);
             }
             catch (Exception ex)
@@ -55,15 +55,24 @@ public static class Endpoints
 
         // Approve or reject a trip request
         group.MapPost("/requests/approval", async (
-            [FromServices] Kernel kernel, 
-            [FromServices] KernelProcess process, 
+            [FromServices] ProcessService processService,
             [FromServices] ILogger<Program> logger,
-            TripRequestResult result, 
+            TripRequestResult result,
             CancellationToken cancellationToken) =>
         {
             try
             {
-                await process.StartAsync(kernel, new KernelProcessEvent { Id = nameof(ApprovalStep.HandleApprovalResponseAsync), Data = result });
+                logger.LogInformation("Received approval request - TripId: {TripId}, Status: {Status}, ApprovalNotes: {ApprovalNotes}, ProcessedDateTime: {ProcessedDateTime}",
+                    result.TripId, result.Status, result.ApprovalNotes, result.ProcessedDateTime);
+
+                if (string.IsNullOrEmpty(result.TripId))
+                {
+                    logger.LogError("TripId is null or empty in approval request");
+                    return Results.BadRequest("TripId is required");
+                }
+
+                // Resume the workflow with the admin's approval decision
+                await processService.ResumeWorkflowWithApprovalAsync(result.TripId, result);
                 return Results.Ok();
             }
             catch (Exception ex)

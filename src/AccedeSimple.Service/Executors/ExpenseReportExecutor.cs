@@ -1,51 +1,39 @@
 #pragma warning disable
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
-using System.Threading.Tasks;
-using AccedeSimple.Domain;
-using Microsoft.Extensions.AI;
-using Microsoft.SemanticKernel.Connectors.OpenAI;
-using System.Linq;
-using System.ComponentModel;
-using System.Text.Json.Schema;
 using System.Text.Json;
+using Microsoft.Extensions.AI;
+using AccedeSimple.Domain;
 using AccedeSimple.Service.Services;
 using Microsoft.Extensions.Options;
+using Microsoft.Agents.AI.Workflows;
 
-namespace AccedeSimple.Service.ProcessSteps;
+namespace AccedeSimple.Service.Executors;
 
-public class ExpenseReportStep : KernelProcessStep
+public class ExpenseReportExecutor(
+    IChatClient chatClient,
+    MessageService messageService,
+    IOptions<UserSettings> userSettings) : Executor<object>("ExpenseReportExecutor")
 {
-    private readonly IChatClient _chatClient;
-     private StateStore _state;
-    private MessageService _messageService;
-    private UserSettings _userSettings;
+    private readonly IChatClient _chatClient = chatClient;
+    private readonly MessageService _messageService = messageService;
+    private readonly UserSettings _userSettings = userSettings.Value;
 
-    public ExpenseReportStep(IChatClient chatClient, StateStore state, MessageService messageService, IOptions<UserSettings> userSettings)
+    public override async ValueTask HandleAsync(
+        object input,
+        IWorkflowContext context,
+        CancellationToken cancellationToken)
     {
-        _chatClient = chatClient;
-        _state = state;
-        _messageService = messageService;
-        _userSettings = userSettings.Value;
-    }
-
-    [KernelFunction("GenerateExpenseReportAsync")]
-    [Description("Generate an expense report based on receipts and trip details.")]
-    public async Task GenerateExpenseReportAsync(
-        KernelProcessStepContext context)
-    {
-
-        var receipts = _state.Get("receipts").Value as List<ReceiptData>;
+        // Read receipts from workflow state
+        var receipts = await context.ReadStateAsync<List<ReceiptData>>("receipts", cancellationToken);
 
         // Convert receipts to expense items
-        var expenseItems = receipts.Select(r => new ExpenseItem(
+        var expenseItems = receipts?.Select(r => new ExpenseItem(
             Description: r.Description,
             Amount: r.Amount,
             Category: r.Category,
             Date: r.Date ?? DateTime.Now,
             ReceiptReference: r.Id,
             Notes: null
-        )).ToList();
+        )).ToList() ?? [];
 
         // Calculate total expenses
         var totalExpenses = expenseItems.Sum(e => e.Amount);
@@ -68,18 +56,19 @@ public class ExpenseReportStep : KernelProcessStep
             Make sure to include the following information:
             - Total Expenses
             - Items (Description, Amount, Category, Date, Receipt Reference)
-            
+
             The user has provided the following information:
-            
+
             {JsonSerializer.Serialize(report)}
-            
+
             Today's date is: {DateTime.Now.ToString()}
-            
+
             Generate a summary of the expense report:
             """;
 
-        var summaryResponse = await _chatClient.GetResponseAsync(summaryPrompt);
-    
+        var summaryResponse = await _chatClient.GetResponseAsync(summaryPrompt, cancellationToken: cancellationToken);
+
         await _messageService.AddMessageAsync(new AssistantResponse(summaryResponse.Text), _userSettings.UserId);
     }
 }
+#pragma warning restore

@@ -316,7 +316,7 @@ const ChatContainer: React.FC<ChatContainerProps> = ({
                     <h3 className="status-title">{statusTitle}</h3>
                     <p className="status-details">
                         {result.approvalNotes && `${result.approvalNotes} • `}
-                        Processed on {new Date(result.processedTime).toLocaleString()}
+                        Processed on {new Date(result.processedDateTime).toLocaleString()}
                     </p>
                 </div>
             </div>

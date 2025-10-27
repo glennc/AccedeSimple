@@ -1,8 +1,5 @@
 #pragma warning disable
-using System.ComponentModel;
 using System.Diagnostics;
-using System.Text.Json;
-using System.Threading.Tasks;
 using AccedeSimple.Domain;
 using AccedeSimple.Service.Services;
 using Azure.Identity;
@@ -12,19 +9,18 @@ using Microsoft.Extensions.AI.Evaluation.Reporting;
 using Microsoft.Extensions.AI.Evaluation.Reporting.Storage;
 using Microsoft.Extensions.AI.Evaluation.Safety;
 using Microsoft.Extensions.Options;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
-using Microsoft.SemanticKernel.Connectors.OpenAI;
-using OpenTelemetry.Metrics;
+using Microsoft.Agents.AI.Workflows;
 
-namespace AccedeSimple.Service.ProcessSteps;
+namespace AccedeSimple.Service.Executors;
 
-public class ReceiptProcessingStep : KernelProcessStep
+public class ReceiptProcessingExecutor(
+    IChatClient chatClient,
+    MessageService messageService,
+    IOptions<UserSettings> userSettings) : Executor<UserMessage>("ReceiptProcessingExecutor")
 {
-    private IChatClient _chatClient;
-    private StateStore _state;
-    private readonly MessageService _messageService;
-    private readonly UserSettings _userSettings;
+    private readonly IChatClient _chatClient = chatClient;
+    private readonly MessageService _messageService = messageService;
+    private readonly UserSettings _userSettings = userSettings.Value;
 
     private static readonly ChatConfiguration s_SafetyChatConfiguration =
         new ContentSafetyServiceConfiguration(
@@ -40,35 +36,21 @@ public class ReceiptProcessingStep : KernelProcessStep
             evaluators: [new ContentHarmEvaluator()],
             chatConfiguration: s_SafetyChatConfiguration);
 
-    public ReceiptProcessingStep(
-        IChatClient chatClient,
-        StateStore state,
-        MessageService messageService,
-        IOptions<UserSettings> userSettings)
-    {
-        _chatClient = chatClient;
-        _state = state;
-        _messageService = messageService;
-        _userSettings = userSettings.Value;
-    }
-
-    [KernelFunction("ProcessReceiptsAsync")]
-    [Description("Process receipts for expense compliance and categorization.")]
-    public async Task ProcessReceiptsAsync(
+    public override async ValueTask HandleAsync(
         UserMessage userInput,
-        KernelProcessStepContext context)
+        IWorkflowContext context,
+        CancellationToken cancellationToken)
     {
         var (success, elapsed) = await CheckImageSafetyAsync(userInput);
         if (success)
         {
-            var receiptResponse = await _chatClient.GetResponseAsync<List<ReceiptData>>(userInput.ToChatMessage());
+            var receiptResponse = await _chatClient.GetResponseAsync<List<ReceiptData>>(userInput.ToChatMessage(), cancellationToken: cancellationToken);
 
             if (receiptResponse.TryGetResult(out var receipts))
             {
-                // Update state with processed receipts
-                _state.Set("receipts", receipts);
+                // Store processed receipts in workflow state
+                await context.QueueStateUpdateAsync("receipts", receipts, cancellationToken);
 
-                // await context.EmitEventAsync("ReceiptsProcessed");
                 await _messageService.AddMessageAsync(
                     new AssistantResponse(
                         $"Receipts processed successfully in {elapsed} s. No unsafe content detected."),
@@ -137,3 +119,4 @@ public class ReceiptProcessingStep : KernelProcessStep
         }
     }
 }
+#pragma warning restore
