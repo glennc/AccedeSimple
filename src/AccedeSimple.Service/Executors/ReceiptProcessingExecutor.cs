@@ -16,7 +16,7 @@ namespace AccedeSimple.Service.Executors;
 public class ReceiptProcessingExecutor(
     IChatClient chatClient,
     MessageService messageService,
-    IOptions<UserSettings> userSettings) : Executor<UserMessage>("ReceiptProcessingExecutor")
+    IOptions<UserSettings> userSettings) : Executor<UserMessage, List<ReceiptData>>("ReceiptProcessingExecutor")
 {
     private readonly IChatClient _chatClient = chatClient;
     private readonly MessageService _messageService = messageService;
@@ -36,7 +36,7 @@ public class ReceiptProcessingExecutor(
             evaluators: [new ContentHarmEvaluator()],
             chatConfiguration: s_SafetyChatConfiguration);
 
-    public override async ValueTask HandleAsync(
+    public override async ValueTask<List<ReceiptData>> HandleAsync(
         UserMessage userInput,
         IWorkflowContext context,
         CancellationToken cancellationToken)
@@ -55,6 +55,8 @@ public class ReceiptProcessingExecutor(
                     new AssistantResponse(
                         $"Receipts processed successfully in {elapsed} s. No unsafe content detected."),
                     _userSettings.UserId);
+
+                return receipts;
             }
             else
             {
@@ -64,6 +66,8 @@ public class ReceiptProcessingExecutor(
                     _userSettings.UserId);
             }
         }
+
+        return [];
     }
 
     async Task<(bool success, string elapsed)> CheckImageSafetyAsync(UserMessage userInput)

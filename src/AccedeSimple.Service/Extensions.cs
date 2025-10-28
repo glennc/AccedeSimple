@@ -57,9 +57,13 @@ public static class Extensions
             var receiptProcessing = sp.GetRequiredService<ReceiptProcessingExecutor>();
             var expenseReport = sp.GetRequiredService<ExpenseReportExecutor>();
 
-            // ReceiptProcessing → ExpenseReport
+            // Create RequestPort for user to confirm expense report generation
+            var generateReportPort = RequestPort.Create<List<ReceiptData>, object>("GenerateReportConfirmation");
+
+            // ReceiptProcessing → GenerateReportConfirmation → ExpenseReport
             return new WorkflowBuilder(receiptProcessing)
-                .AddEdge(receiptProcessing, expenseReport)
+                .AddEdge(receiptProcessing, generateReportPort)
+                .AddEdge(generateReportPort, expenseReport)
                 .WithOutputFrom(expenseReport)
                 .Build();
         });

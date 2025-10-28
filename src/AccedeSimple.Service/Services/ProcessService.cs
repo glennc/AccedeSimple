@@ -71,23 +71,48 @@ public class ProcessService
 
             case UserIntent.StartTravelPlanning when userInput is UserMessage userMessage:
                 // Start the travel workflow - await until it pauses at RequestPort
-                await RunTravelWorkflowAsync(userMessage);
+                await RunOrResumeWorkflowAsync(
+                    workflowKey: null,
+                    workflowName: "travel workflow",
+                    input: userMessage);
                 break;
 
             case UserIntent.StartTripApproval when userInput is ItinerarySelectedChatItem itinerarySelected:
                 // Resume the workflow from checkpoint with user's selection
-                await ResumeTravelWorkflowAsync(itinerarySelected.MessageId, itinerarySelected);
+                await RunOrResumeWorkflowAsync<UserMessage>(
+                    workflowKey: null,
+                    workflowName: "travel workflow",
+                    correlationId: itinerarySelected.MessageId,
+                    response: itinerarySelected,
+                    sessionNotFoundMessage: "Sorry, I couldn't find your trip planning session. Please start over.");
                 break;
 
-            case UserIntent.ProcessReceipts:
-                // Start the expense workflow
-                await RunKeyedWorkflowAsync("ExpenseWorkflow", userInput);
+            case UserIntent.ProcessReceipts when userInput is UserMessage receiptMessage:
+                // Start the expense workflow - await until it pauses at GenerateReportConfirmation RequestPort
+                await RunOrResumeWorkflowAsync(
+                    workflowKey: "ExpenseWorkflow",
+                    workflowName: "expense workflow",
+                    input: receiptMessage);
                 break;
 
             case UserIntent.GenerateExpenseReport:
-                // Continue expense workflow - for now run directly
-                // TODO: Implement proper workflow continuation
-                await RunExecutorDirectlyAsync<ExpenseReportExecutor>(new object());
+                // Resume the expense workflow from checkpoint
+                var receiptSessionId = _stateStore.GetAs<string>($"receipt-session:{_userSettings.UserId}:latest");
+                if (receiptSessionId != null)
+                {
+                    await RunOrResumeWorkflowAsync<UserMessage>(
+                        workflowKey: "ExpenseWorkflow",
+                        workflowName: "expense workflow",
+                        correlationId: receiptSessionId,
+                        response: new object(),
+                        sessionNotFoundMessage: "Sorry, I couldn't find your receipt processing session. Please start over.");
+                }
+                else
+                {
+                    await _messageService.AddMessageAsync(
+                        new AssistantResponse("No receipts have been processed yet. Please upload receipts first."),
+                        _userSettings.UserId);
+                }
                 break;
 
             default:
@@ -96,72 +121,115 @@ public class ProcessService
         }
     }
 
-    private async Task RunKeyedWorkflowAsync(string workflowKey, object? input = null)
-    {
-        var workflow = _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>(workflowKey);
-        await using var run = await InProcessExecution.RunAsync(workflow, input);
-
-        // Wait for completion
-        foreach (var evt in run.NewEvents)
-        {
-            // Events are processed, outputs are handled by executors via MessageService
-        }
-    }
-
-    // Temporary method to run an executor directly without a workflow
-    private async Task RunExecutorDirectlyAsync<TExecutor>(object input) where TExecutor : Executor
-    {
-        var executor = _serviceProvider.GetRequiredService<TExecutor>();
-        var workflow = new WorkflowBuilder(executor).Build();
-        await using var run = await InProcessExecution.RunAsync(workflow, input);
-
-        foreach (var evt in run.NewEvents)
-        {
-            // Events are processed, outputs are handled by executors via MessageService
-        }
-    }
-
     /// <summary>
-    /// Start travel workflow and run until it pauses at a RequestPort
+    /// Run or resume a workflow. If correlationId is provided, resumes from checkpoint; otherwise starts new.
     /// </summary>
-    private async Task RunTravelWorkflowAsync(UserMessage userMessage)
+    /// <typeparam name="TInput">The input type for the workflow (e.g., UserMessage)</typeparam>
+    /// <param name="workflowKey">Optional key for keyed workflow service. If null, uses default workflow.</param>
+    /// <param name="input">Input for starting a new workflow (required when correlationId is null)</param>
+    /// <param name="correlationId">Correlation ID for resuming an existing workflow</param>
+    /// <param name="response">Response to send when resuming (required when correlationId is not null)</param>
+    private async Task RunOrResumeWorkflowAsync<TInput>(
+        string? workflowKey,
+        string workflowName,
+        TInput? input = default,
+        string? correlationId = null,
+        object? response = null,
+        string? sessionNotFoundMessage = null) where TInput : notnull
     {
-        // Generate a unique workflow run ID for this trip planning session
-        var workflowRunId = Guid.NewGuid().ToString();
-
-        _logger.LogInformation("Starting travel workflow with RunId {RunId}", workflowRunId);
-
-        var workflow = _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>();
         var checkpointManager = CheckpointManager.Default;
 
-        // Start streaming execution with checkpoint support and specific runId
-        await using var checkpointedRun = await InProcessExecution.StreamAsync(
-            workflow, userMessage, checkpointManager, workflowRunId);
+        // Resolve workflow - MUST be done inside this method to get a fresh instance each time
+        var workflow = workflowKey == null
+            ? _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>()
+            : _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>(workflowKey);
 
+        // Determine if we're resuming or starting new
+        if (correlationId != null)
+        {
+            // Resuming from checkpoint
+            _logger.LogInformation("Resuming {WorkflowName} for correlation {CorrelationId}", workflowName, correlationId);
+
+            // Get the stored CheckpointInfo metadata (contains RunId and CheckpointId)
+            var checkpointInfo = _stateStore.GetAs<CheckpointInfo>($"checkpoint-info:{correlationId}");
+            if (checkpointInfo == null)
+            {
+                _logger.LogError("No CheckpointInfo found for correlation {CorrelationId}", correlationId);
+                await _messageService.AddMessageAsync(new AssistantResponse(sessionNotFoundMessage ?? "Session not found."), _userSettings.UserId);
+                return;
+            }
+
+            // Get the stored ExternalRequest
+            var storedRequest = _stateStore.GetAs<ExternalRequest>($"pending-request:{correlationId}");
+            if (storedRequest == null)
+            {
+                _logger.LogError("No pending request found for correlation {CorrelationId}", correlationId);
+                await _messageService.AddMessageAsync(new AssistantResponse(sessionNotFoundMessage ?? "Session not found."), _userSettings.UserId);
+                return;
+            }
+
+            await using var checkpointedRun = await InProcessExecution.ResumeStreamAsync(workflow, checkpointInfo, checkpointManager, checkpointInfo.RunId);
+            await ProcessWorkflowEventsAsync(checkpointedRun, correlationId, response);
+        }
+        else
+        {
+            // Starting new workflow
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input), "Input is required when starting a new workflow");
+            }
+
+            var workflowRunId = Guid.NewGuid().ToString();
+            _logger.LogInformation("Starting {WorkflowName} with RunId {RunId}", workflowName, workflowRunId);
+
+            // Generic type parameter TInput is properly inferred from the caller, ensuring correct type routing
+            await using var checkpointedRun = await InProcessExecution.StreamAsync(workflow, input, checkpointManager, workflowRunId);
+            await ProcessWorkflowEventsAsync(checkpointedRun, null, null);
+        }
+    }
+
+    private async Task ProcessWorkflowEventsAsync(
+        Checkpointed<StreamingRun> checkpointedRun,
+        string? correlationId,
+        object? response)
+    {
         CheckpointInfo? lastCheckpointInfo = null;
+        bool responseSent = false;
 
-        // Process events until we hit a RequestPort or workflow completes
+        // Process events
         await foreach (var evt in checkpointedRun.Run.WatchStreamAsync())
         {
             switch (evt)
             {
+                case RequestInfoEvent requestInfoEvt when correlationId != null && !responseSent:
+                    // Resuming: send response to the paused RequestPort
+                    var externalResponse = requestInfoEvt.Request.CreateResponse(response!);
+                    await checkpointedRun.Run.SendResponseAsync(externalResponse);
+                    responseSent = true;
+                    break;
+
                 case RequestInfoEvent requestInfoEvt:
-                    // Workflow is requesting information - store CheckpointInfo and pause
-                    await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo);
-                    return; // HTTP request completes here
+                    // Hit a RequestPort - save CheckpointInfo and pause
+                    _logger.LogInformation("Workflow paused at RequestPort {PortId}", requestInfoEvt.Request.PortInfo.PortId);
+
+                    await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo, correlationId);
+                    return;
 
                 case SuperStepCompletedEvent superStepEvt:
-                    // Save CheckpointInfo metadata for potential pause
+                    _logger.LogInformation("SuperStep completed");
                     lastCheckpointInfo = superStepEvt.CompletionInfo?.Checkpoint;
                     break;
 
                 case ExecutorCompletedEvent executorEvt:
-                    _logger.LogDebug("Executor {ExecutorId} completed", executorEvt.ExecutorId);
+                    _logger.LogInformation("Executor {ExecutorId} completed", executorEvt.ExecutorId);
                     break;
 
                 case WorkflowOutputEvent outputEvt:
                     _logger.LogInformation("Workflow completed with output");
-                    // Workflow completed without pausing
+                    if (correlationId != null)
+                    {
+                        await CleanupWorkflowStateAsync(correlationId);
+                    }
                     return;
 
                 case WorkflowErrorEvent errorEvt:
@@ -170,8 +238,17 @@ public class ProcessService
                     await _messageService.AddMessageAsync(
                         new AssistantResponse($"An error occurred: {exception?.Message ?? "Unknown error"}"),
                         _userSettings.UserId);
+                    if (correlationId != null)
+                    {
+                        await CleanupWorkflowStateAsync(correlationId);
+                    }
                     return;
             }
+        }
+
+        if (correlationId != null)
+        {
+            _logger.LogWarning("Resume workflow event stream ended without WorkflowOutputEvent or RequestInfoEvent");
         }
     }
 
@@ -180,94 +257,12 @@ public class ProcessService
     /// </summary>
     public async Task ResumeWorkflowWithApprovalAsync(string tripId, TripRequestResult approvalResult)
     {
-        await ResumeTravelWorkflowAsync(tripId, approvalResult);
-    }
-
-    /// <summary>
-    /// Resume travel workflow from CheckpointInfo metadata
-    /// </summary>
-    /// <param name="correlationId">User-facing ID (messageId or tripId) used to look up checkpoint</param>
-    /// <param name="response">The response data to send to the paused RequestPort</param>
-    private async Task ResumeTravelWorkflowAsync(string correlationId, object response)
-    {
-        _logger.LogInformation("Resuming travel workflow for correlation {CorrelationId}", correlationId);
-
-        // Get the stored CheckpointInfo metadata (contains RunId and CheckpointId)
-        var checkpointInfo = _stateStore.GetAs<CheckpointInfo>($"checkpoint-info:{correlationId}");
-        if (checkpointInfo == null)
-        {
-            _logger.LogError("No CheckpointInfo found for correlation {CorrelationId}", correlationId);
-            await _messageService.AddMessageAsync(
-                new AssistantResponse("Sorry, I couldn't find your trip planning session. Please start over."),
-                _userSettings.UserId);
-            return;
-        }
-
-        // Get the stored ExternalRequest
-        var storedRequest = _stateStore.GetAs<ExternalRequest>($"pending-request:{correlationId}");
-        if (storedRequest == null)
-        {
-            _logger.LogError("No pending request found for correlation {CorrelationId}", correlationId);
-            await _messageService.AddMessageAsync(
-                new AssistantResponse("Sorry, I couldn't find your trip planning session. Please start over."),
-                _userSettings.UserId);
-            return;
-        }
-
-        var workflow = _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>();
-        var checkpointManager = CheckpointManager.Default;
-
-        // Resume from CheckpointInfo (framework will load the actual checkpoint state using RunId + CheckpointId)
-        await using var checkpointedRun = await InProcessExecution.ResumeStreamAsync(
-            workflow, checkpointInfo, checkpointManager, checkpointInfo.RunId);
-
-        CheckpointInfo? lastCheckpointInfo = null;
-        bool responseSent = false;
-
-        // Continue processing events
-        await foreach (var evt in checkpointedRun.Run.WatchStreamAsync())
-        {
-            switch (evt)
-            {
-                case RequestInfoEvent requestInfoEvt when !responseSent:
-                    // This is the RequestPort we paused at - send our response to it
-                    var externalResponse = requestInfoEvt.Request.CreateResponse(response);
-                    await checkpointedRun.Run.SendResponseAsync(externalResponse);
-                    responseSent = true;
-                    break;
-
-                case RequestInfoEvent requestInfoEvt:
-                    // Hit another RequestPort - save CheckpointInfo and pause again
-                    await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo, correlationId);
-                    return; // HTTP request completes here
-
-                case SuperStepCompletedEvent superStepEvt:
-                    // Save CheckpointInfo metadata for potential pause
-                    lastCheckpointInfo = superStepEvt.CompletionInfo?.Checkpoint;
-                    break;
-
-                case ExecutorCompletedEvent executorEvt:
-                    _logger.LogDebug("Executor {ExecutorId} completed", executorEvt.ExecutorId);
-                    break;
-
-                case WorkflowOutputEvent outputEvt:
-                    _logger.LogInformation("Workflow completed with output");
-                    // Workflow completed - cleanup
-                    await CleanupWorkflowStateAsync(correlationId);
-                    return;
-
-                case WorkflowErrorEvent errorEvt:
-                    var exception = errorEvt.Data as Exception;
-                    _logger.LogError(exception, "Workflow error");
-                    await _messageService.AddMessageAsync(
-                        new AssistantResponse($"An error occurred: {exception?.Message ?? "Unknown error"}"),
-                        _userSettings.UserId);
-                    await CleanupWorkflowStateAsync(correlationId);
-                    return;
-            }
-        }
-
-        _logger.LogWarning("Resume workflow event stream ended without WorkflowOutputEvent or RequestInfoEvent");
+        await RunOrResumeWorkflowAsync<UserMessage>(
+            workflowKey: null,
+            workflowName: "travel workflow",
+            correlationId: tripId,
+            response: approvalResult,
+            sessionNotFoundMessage: "Sorry, I couldn't find your trip planning session. Please start over.");
     }
 
     /// <summary>
@@ -284,6 +279,15 @@ public class ProcessService
         {
             _logger.LogError("No CheckpointInfo available when pausing at RequestPort {PortId}", request.PortInfo.PortId);
             return;
+        }
+
+        // If this is a subsequent pause in the same workflow, clean up previous checkpoint data
+        if (correlationId != null)
+        {
+            _logger.LogDebug("Cleaning up previous checkpoint data for correlation {CorrelationId}", correlationId);
+            _stateStore.Delete($"checkpoint-info:{correlationId}");
+            _stateStore.Delete($"pending-request:{correlationId}");
+            _stateStore.Delete($"trip-options:{correlationId}");
         }
 
         if (request.PortInfo.PortId == "UserSelection")
@@ -331,6 +335,30 @@ public class ProcessService
                     _userSettings.UserId);
             }
         }
+        else if (request.PortInfo.PortId == "GenerateReportConfirmation")
+        {
+            // User needs to confirm expense report generation
+            var receipts = request.DataAs<List<ReceiptData>>();
+            if (receipts != null)
+            {
+                // Generate a unique session ID for this receipt processing session
+                var receiptSessionId = Guid.NewGuid().ToString();
+
+                // Store CheckpointInfo metadata by receiptSessionId (user will resume with this ID)
+                _stateStore.Set($"checkpoint-info:{receiptSessionId}", checkpointInfo);
+
+                // Store the ExternalRequest so we can respond when user confirms
+                _stateStore.Set($"pending-request:{receiptSessionId}", request);
+
+                // Store receipt session ID for later retrieval
+                _stateStore.Set($"receipt-session:{_userSettings.UserId}:latest", receiptSessionId);
+
+                // Send confirmation message
+                await _messageService.AddMessageAsync(
+                    new AssistantResponse($"Receipts processed. Ready to generate expense report. Say 'generate expense report' when ready."),
+                    _userSettings.UserId);
+            }
+        }
         else
         {
             _logger.LogWarning("Unknown request port: {PortId}", request.PortInfo.PortId);
@@ -338,9 +366,9 @@ public class ProcessService
     }
 
     /// <summary>
-    /// Cleanup workflow state after completion
+    /// Cleanup common workflow checkpoint state after completion
     /// </summary>
-    /// <param name="correlationId">The user-facing correlation ID (messageId or tripId)</param>
+    /// <param name="correlationId">The user-facing correlation ID</param>
     private async Task CleanupWorkflowStateAsync(string? correlationId)
     {
         if (correlationId == null)
@@ -348,22 +376,26 @@ public class ProcessService
             return;
         }
 
-        // Remove CheckpointInfo metadata
+        // Remove common checkpoint data
         _stateStore.Delete($"checkpoint-info:{correlationId}");
-
-        // Remove pending ExternalRequest
         _stateStore.Delete($"pending-request:{correlationId}");
 
-        // Remove trip options if they exist
+        // Cleanup workflow-specific data based on what exists in state
+        // Travel workflow: trip-options, trip-requests
         _stateStore.Delete($"trip-options:{correlationId}");
-
-        // Remove trip request from the trip-requests list if it exists
         var tripRequests = _stateStore.GetAs<List<TripRequest>>("trip-requests");
         if (tripRequests != null)
         {
-            // Remove by TripId (correlationId is the tripId at this point)
             tripRequests.RemoveAll(tr => tr.TripId == correlationId);
             _stateStore.Set("trip-requests", tripRequests);
+        }
+
+        // Expense workflow: receipt-session
+        var receiptSessionKey = $"receipt-session:{_userSettings.UserId}:latest";
+        var storedReceiptSessionId = _stateStore.GetAs<string>(receiptSessionKey);
+        if (storedReceiptSessionId == correlationId)
+        {
+            _stateStore.Delete(receiptSessionKey);
         }
 
         await Task.CompletedTask;
