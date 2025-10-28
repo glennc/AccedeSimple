@@ -6,7 +6,6 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
-using Microsoft.SemanticKernel;
 
 namespace AccedeSimple.Service.Services;
 
@@ -73,7 +72,7 @@ public class ProcessService
                 // Start the travel workflow - await until it pauses at RequestPort
                 var tripId = Guid.NewGuid().ToString();
                 await RunOrResumeWorkflowAsync(
-                    workflowKey: null,
+                    workflow: _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>(),
                     workflowName: "travel workflow",
                     tripId: tripId,
                     data: userMessage);
@@ -82,7 +81,7 @@ public class ProcessService
             case UserIntent.StartTripApproval when userInput is ItinerarySelectedChatItem itinerarySelected:
                 // Resume the workflow from checkpoint with user's selection
                 await RunOrResumeWorkflowAsync<object>(
-                    workflowKey: null,
+                    workflow: _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>(),
                     workflowName: "travel workflow",
                     tripId: itinerarySelected.TripId,
                     data: itinerarySelected,
@@ -93,7 +92,7 @@ public class ProcessService
                 // Start the expense workflow - await until it pauses at GenerateReportConfirmation RequestPort
                 var expenseSessionId = Guid.NewGuid().ToString();
                 await RunOrResumeWorkflowAsync(
-                    workflowKey: "ExpenseWorkflow",
+                    workflow: _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>("ExpenseWorkflow"),
                     workflowName: "expense workflow",
                     tripId: expenseSessionId,
                     data: receiptMessage);
@@ -104,12 +103,7 @@ public class ProcessService
                 var receiptSessionId = _stateStore.GetAs<string>($"receipt-session:{_userSettings.UserId}:latest");
                 if (receiptSessionId != null)
                 {
-                    await RunOrResumeWorkflowAsync<object>(
-                        workflowKey: "ExpenseWorkflow",
-                        workflowName: "expense workflow",
-                        tripId: receiptSessionId,
-                        data: new object(),
-                        sessionNotFoundMessage: "Sorry, I couldn't find your receipt processing session. Please start over.");
+                    _messageService.AddMessageAsync(new AssistantResponse("Sorry, I couldn't find your receipt processing session. Please start over."), _userSettings.UserId);
                 }
                 else
                 {
@@ -133,18 +127,13 @@ public class ProcessService
     /// <param name="tripId">The trip ID - used as RunId when starting, or to lookup checkpoint when resuming</param>
     /// <param name="data">Data for the workflow - input when starting, response when resuming</param>
     private async Task RunOrResumeWorkflowAsync<TInput>(
-        string? workflowKey,
+        Workflow workflow,
         string workflowName,
         string tripId,
         TInput? data = default,
         string? sessionNotFoundMessage = null) where TInput : notnull
     {
         var checkpointManager = CheckpointManager.Default;
-
-        // Resolve workflow - MUST be done inside this method to get a fresh instance each time
-        var workflow = workflowKey == null
-            ? _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>()
-            : _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>(workflowKey);
 
         // Check if checkpoint exists to determine if we're resuming or starting
         var checkpointInfo = _stateStore.GetAs<CheckpointInfo>($"checkpoint-info:{tripId}");
