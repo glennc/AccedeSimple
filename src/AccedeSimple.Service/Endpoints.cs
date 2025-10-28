@@ -236,15 +236,15 @@ public static class Endpoints
             SelectItineraryRequest request,
             CancellationToken cancellationToken) =>
         {
-            try 
+            try
             {
 
                 var input = new ItinerarySelectedChatItem($"I have selected an itinerary option. {request.OptionId}")
                 {
-                    MessageId = request.MessageId,
+                    TripId = request.TripId,
                     OptionId = request.OptionId
                 };
-                
+
                 await messageService.AddMessageAsync(input, userSettings.Value.UserId);
 
                 await processService.ActAsync(UserIntent.StartTripApproval, input);
@@ -388,7 +388,7 @@ public static class Endpoints
         return $"data:{contentType};base64,{base64}";
     }
 
-    public record SelectItineraryRequest(string MessageId, string OptionId);    
+    public record SelectItineraryRequest(string TripId, string OptionId);
 
     public readonly record struct UriAttachment(string Uri, string ContentType);
 }

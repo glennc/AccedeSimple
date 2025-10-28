@@ -71,28 +71,32 @@ public class ProcessService
 
             case UserIntent.StartTravelPlanning when userInput is UserMessage userMessage:
                 // Start the travel workflow - await until it pauses at RequestPort
+                var tripId = Guid.NewGuid().ToString();
                 await RunOrResumeWorkflowAsync(
                     workflowKey: null,
                     workflowName: "travel workflow",
-                    input: userMessage);
+                    tripId: tripId,
+                    data: userMessage);
                 break;
 
             case UserIntent.StartTripApproval when userInput is ItinerarySelectedChatItem itinerarySelected:
                 // Resume the workflow from checkpoint with user's selection
-                await RunOrResumeWorkflowAsync<UserMessage>(
+                await RunOrResumeWorkflowAsync<object>(
                     workflowKey: null,
                     workflowName: "travel workflow",
-                    correlationId: itinerarySelected.MessageId,
-                    response: itinerarySelected,
+                    tripId: itinerarySelected.TripId,
+                    data: itinerarySelected,
                     sessionNotFoundMessage: "Sorry, I couldn't find your trip planning session. Please start over.");
                 break;
 
             case UserIntent.ProcessReceipts when userInput is UserMessage receiptMessage:
                 // Start the expense workflow - await until it pauses at GenerateReportConfirmation RequestPort
+                var expenseSessionId = Guid.NewGuid().ToString();
                 await RunOrResumeWorkflowAsync(
                     workflowKey: "ExpenseWorkflow",
                     workflowName: "expense workflow",
-                    input: receiptMessage);
+                    tripId: expenseSessionId,
+                    data: receiptMessage);
                 break;
 
             case UserIntent.GenerateExpenseReport:
@@ -100,11 +104,11 @@ public class ProcessService
                 var receiptSessionId = _stateStore.GetAs<string>($"receipt-session:{_userSettings.UserId}:latest");
                 if (receiptSessionId != null)
                 {
-                    await RunOrResumeWorkflowAsync<UserMessage>(
+                    await RunOrResumeWorkflowAsync<object>(
                         workflowKey: "ExpenseWorkflow",
                         workflowName: "expense workflow",
-                        correlationId: receiptSessionId,
-                        response: new object(),
+                        tripId: receiptSessionId,
+                        data: new object(),
                         sessionNotFoundMessage: "Sorry, I couldn't find your receipt processing session. Please start over.");
                 }
                 else
@@ -122,19 +126,17 @@ public class ProcessService
     }
 
     /// <summary>
-    /// Run or resume a workflow. If correlationId is provided, resumes from checkpoint; otherwise starts new.
+    /// Run or resume a workflow. Determines start vs resume based on whether checkpoint exists for the tripId.
     /// </summary>
-    /// <typeparam name="TInput">The input type for the workflow (e.g., UserMessage)</typeparam>
+    /// <typeparam name="TInput">The data type - workflow input type when starting (e.g., UserMessage), response type when resuming (e.g., object, TripRequestResult)</typeparam>
     /// <param name="workflowKey">Optional key for keyed workflow service. If null, uses default workflow.</param>
-    /// <param name="input">Input for starting a new workflow (required when correlationId is null)</param>
-    /// <param name="correlationId">Correlation ID for resuming an existing workflow</param>
-    /// <param name="response">Response to send when resuming (required when correlationId is not null)</param>
+    /// <param name="tripId">The trip ID - used as RunId when starting, or to lookup checkpoint when resuming</param>
+    /// <param name="data">Data for the workflow - input when starting, response when resuming</param>
     private async Task RunOrResumeWorkflowAsync<TInput>(
         string? workflowKey,
         string workflowName,
-        TInput? input = default,
-        string? correlationId = null,
-        object? response = null,
+        string tripId,
+        TInput? data = default,
         string? sessionNotFoundMessage = null) where TInput : notnull
     {
         var checkpointManager = CheckpointManager.Default;
@@ -144,53 +146,45 @@ public class ProcessService
             ? _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>()
             : _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>(workflowKey);
 
-        // Determine if we're resuming or starting new
-        if (correlationId != null)
-        {
-            // Resuming from checkpoint
-            _logger.LogInformation("Resuming {WorkflowName} for correlation {CorrelationId}", workflowName, correlationId);
+        // Check if checkpoint exists to determine if we're resuming or starting
+        var checkpointInfo = _stateStore.GetAs<CheckpointInfo>($"checkpoint-info:{tripId}");
 
-            // Get the stored CheckpointInfo metadata (contains RunId and CheckpointId)
-            var checkpointInfo = _stateStore.GetAs<CheckpointInfo>($"checkpoint-info:{correlationId}");
-            if (checkpointInfo == null)
-            {
-                _logger.LogError("No CheckpointInfo found for correlation {CorrelationId}", correlationId);
-                await _messageService.AddMessageAsync(new AssistantResponse(sessionNotFoundMessage ?? "Session not found."), _userSettings.UserId);
-                return;
-            }
+        if (checkpointInfo != null)
+        {
+            // Checkpoint exists - we're resuming
+            _logger.LogInformation("Resuming {WorkflowName} for trip {TripId}", workflowName, tripId);
 
             // Get the stored ExternalRequest
-            var storedRequest = _stateStore.GetAs<ExternalRequest>($"pending-request:{correlationId}");
+            var storedRequest = _stateStore.GetAs<ExternalRequest>($"pending-request:{tripId}");
             if (storedRequest == null)
             {
-                _logger.LogError("No pending request found for correlation {CorrelationId}", correlationId);
+                _logger.LogError("No pending request found for trip {TripId}", tripId);
                 await _messageService.AddMessageAsync(new AssistantResponse(sessionNotFoundMessage ?? "Session not found."), _userSettings.UserId);
                 return;
             }
 
             await using var checkpointedRun = await InProcessExecution.ResumeStreamAsync(workflow, checkpointInfo, checkpointManager, checkpointInfo.RunId);
-            await ProcessWorkflowEventsAsync(checkpointedRun, correlationId, response);
+            await ProcessWorkflowEventsAsync(checkpointedRun, tripId, data);
         }
         else
         {
-            // Starting new workflow
-            if (input == null)
+            // No checkpoint - we're starting new
+            if (data == null)
             {
-                throw new ArgumentNullException(nameof(input), "Input is required when starting a new workflow");
+                throw new ArgumentNullException(nameof(data), "Data is required when starting a new workflow");
             }
 
-            var workflowRunId = Guid.NewGuid().ToString();
-            _logger.LogInformation("Starting {WorkflowName} with RunId {RunId}", workflowName, workflowRunId);
+            _logger.LogInformation("Starting {WorkflowName} with tripId/RunId {TripId}", workflowName, tripId);
 
-            // Generic type parameter TInput is properly inferred from the caller, ensuring correct type routing
-            await using var checkpointedRun = await InProcessExecution.StreamAsync(workflow, input, checkpointManager, workflowRunId);
+            // Use tripId as RunId for the workflow
+            await using var checkpointedRun = await InProcessExecution.StreamAsync(workflow, data, checkpointManager, tripId);
             await ProcessWorkflowEventsAsync(checkpointedRun, null, null);
         }
     }
 
     private async Task ProcessWorkflowEventsAsync(
         Checkpointed<StreamingRun> checkpointedRun,
-        string? correlationId,
+        string? tripId,
         object? response)
     {
         CheckpointInfo? lastCheckpointInfo = null;
@@ -201,7 +195,7 @@ public class ProcessService
         {
             switch (evt)
             {
-                case RequestInfoEvent requestInfoEvt when correlationId != null && !responseSent:
+                case RequestInfoEvent requestInfoEvt when tripId != null && !responseSent:
                     // Resuming: send response to the paused RequestPort
                     var externalResponse = requestInfoEvt.Request.CreateResponse(response!);
                     await checkpointedRun.Run.SendResponseAsync(externalResponse);
@@ -212,7 +206,7 @@ public class ProcessService
                     // Hit a RequestPort - save CheckpointInfo and pause
                     _logger.LogInformation("Workflow paused at RequestPort {PortId}", requestInfoEvt.Request.PortInfo.PortId);
 
-                    await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo, correlationId);
+                    await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo, tripId);
                     return;
 
                 case SuperStepCompletedEvent superStepEvt:
@@ -226,9 +220,9 @@ public class ProcessService
 
                 case WorkflowOutputEvent outputEvt:
                     _logger.LogInformation("Workflow completed with output");
-                    if (correlationId != null)
+                    if (tripId != null)
                     {
-                        await CleanupWorkflowStateAsync(correlationId);
+                        await CleanupWorkflowStateAsync(tripId);
                     }
                     return;
 
@@ -238,15 +232,15 @@ public class ProcessService
                     await _messageService.AddMessageAsync(
                         new AssistantResponse($"An error occurred: {exception?.Message ?? "Unknown error"}"),
                         _userSettings.UserId);
-                    if (correlationId != null)
+                    if (tripId != null)
                     {
-                        await CleanupWorkflowStateAsync(correlationId);
+                        await CleanupWorkflowStateAsync(tripId);
                     }
                     return;
             }
         }
 
-        if (correlationId != null)
+        if (tripId != null)
         {
             _logger.LogWarning("Resume workflow event stream ended without WorkflowOutputEvent or RequestInfoEvent");
         }
@@ -257,11 +251,11 @@ public class ProcessService
     /// </summary>
     public async Task ResumeWorkflowWithApprovalAsync(string tripId, TripRequestResult approvalResult)
     {
-        await RunOrResumeWorkflowAsync<UserMessage>(
+        await RunOrResumeWorkflowAsync<object>(
             workflowKey: null,
             workflowName: "travel workflow",
-            correlationId: tripId,
-            response: approvalResult,
+            tripId: tripId,
+            data: approvalResult,
             sessionNotFoundMessage: "Sorry, I couldn't find your trip planning session. Please start over.");
     }
 
@@ -270,8 +264,8 @@ public class ProcessService
     /// </summary>
     /// <param name="requestInfoEvt">The RequestInfoEvent from the workflow</param>
     /// <param name="checkpointInfo">CheckpointInfo metadata (contains RunId and CheckpointId)</param>
-    /// <param name="correlationId">The correlation ID from the previous pause (for subsequent pauses in same workflow)</param>
-    private async Task HandleRequestInfoAndPauseAsync(RequestInfoEvent requestInfoEvt, CheckpointInfo? checkpointInfo, string? correlationId = null)
+    /// <param name="tripId">The trip ID from the previous pause (for subsequent pauses in same workflow)</param>
+    private async Task HandleRequestInfoAndPauseAsync(RequestInfoEvent requestInfoEvt, CheckpointInfo? checkpointInfo, string? tripId = null)
     {
         var request = requestInfoEvt.Request;
 
@@ -281,13 +275,10 @@ public class ProcessService
             return;
         }
 
-        // If this is a subsequent pause in the same workflow, clean up previous checkpoint data
-        if (correlationId != null)
+        if (tripId != null)
         {
-            _logger.LogDebug("Cleaning up previous checkpoint data for correlation {CorrelationId}", correlationId);
-            _stateStore.Delete($"checkpoint-info:{correlationId}");
-            _stateStore.Delete($"pending-request:{correlationId}");
-            _stateStore.Delete($"trip-options:{correlationId}");
+            // Clean up trip-options from previous UserSelection pause (if any)
+            _stateStore.Delete($"trip-options:{checkpointInfo.RunId}");
         }
 
         if (request.PortInfo.PortId == "UserSelection")
@@ -296,17 +287,20 @@ public class ProcessService
             var tripOptions = request.DataAs<List<TripOption>>();
             if (tripOptions != null)
             {
-                // Create the message with its own Id - this becomes our user-facing correlation ID
-                var candidateMessage = new CandidateItineraryChatItem("Here are trips matching your requirements.", tripOptions);
+                // Create the message with RunId as its Id - this ensures consistent workflow identity
+                var candidateMessage = new CandidateItineraryChatItem("Here are trips matching your requirements.", tripOptions)
+                {
+                    Id = checkpointInfo.RunId  // Use workflow RunId (tripId) as message Id
+                };
 
-                // Store CheckpointInfo metadata by messageId (user will resume with this ID)
-                _stateStore.Set($"checkpoint-info:{candidateMessage.Id}", checkpointInfo);
+                // Store CheckpointInfo metadata by RunId (user will resume with this ID)
+                _stateStore.Set($"checkpoint-info:{checkpointInfo.RunId}", checkpointInfo);
 
                 // Store the ExternalRequest so we can respond when user resumes
-                _stateStore.Set($"pending-request:{candidateMessage.Id}", request);
+                _stateStore.Set($"pending-request:{checkpointInfo.RunId}", request);
 
                 // Store trip options for TripRequestCreationExecutor to access
-                _stateStore.Set($"trip-options:{candidateMessage.Id}", tripOptions);
+                _stateStore.Set($"trip-options:{checkpointInfo.RunId}", tripOptions);
 
                 // Send trip options to user
                 await _messageService.AddMessageAsync(candidateMessage, _userSettings.UserId);
@@ -318,11 +312,12 @@ public class ProcessService
             var tripRequest = request.DataAs<TripRequest>();
             if (tripRequest != null)
             {
-                // Store CheckpointInfo metadata by tripId (admin will resume with this ID)
-                _stateStore.Set($"checkpoint-info:{tripRequest.TripId}", checkpointInfo);
+                // Store CheckpointInfo metadata by RunId (tripRequest.TripId equals RunId)
+                // Use RunId explicitly for consistency
+                _stateStore.Set($"checkpoint-info:{checkpointInfo.RunId}", checkpointInfo);
 
                 // Store the ExternalRequest so we can respond when admin approves/rejects
-                _stateStore.Set($"pending-request:{tripRequest.TripId}", request);
+                _stateStore.Set($"pending-request:{checkpointInfo.RunId}", request);
 
                 // Store trip request in StateStore so admin page can access it
                 var existingRequests = _stateStore.GetAs<List<TripRequest>>("trip-requests") ?? new List<TripRequest>();
@@ -368,32 +363,32 @@ public class ProcessService
     /// <summary>
     /// Cleanup common workflow checkpoint state after completion
     /// </summary>
-    /// <param name="correlationId">The user-facing correlation ID</param>
-    private async Task CleanupWorkflowStateAsync(string? correlationId)
+    /// <param name="tripId">The trip ID (workflow identifier)</param>
+    private async Task CleanupWorkflowStateAsync(string? tripId)
     {
-        if (correlationId == null)
+        if (tripId == null)
         {
             return;
         }
 
         // Remove common checkpoint data
-        _stateStore.Delete($"checkpoint-info:{correlationId}");
-        _stateStore.Delete($"pending-request:{correlationId}");
+        _stateStore.Delete($"checkpoint-info:{tripId}");
+        _stateStore.Delete($"pending-request:{tripId}");
 
         // Cleanup workflow-specific data based on what exists in state
         // Travel workflow: trip-options, trip-requests
-        _stateStore.Delete($"trip-options:{correlationId}");
+        _stateStore.Delete($"trip-options:{tripId}");
         var tripRequests = _stateStore.GetAs<List<TripRequest>>("trip-requests");
         if (tripRequests != null)
         {
-            tripRequests.RemoveAll(tr => tr.TripId == correlationId);
+            tripRequests.RemoveAll(tr => tr.TripId == tripId);
             _stateStore.Set("trip-requests", tripRequests);
         }
 
         // Expense workflow: receipt-session
         var receiptSessionKey = $"receipt-session:{_userSettings.UserId}:latest";
         var storedReceiptSessionId = _stateStore.GetAs<string>(receiptSessionKey);
-        if (storedReceiptSessionId == correlationId)
+        if (storedReceiptSessionId == tripId)
         {
             _stateStore.Delete(receiptSessionKey);
         }

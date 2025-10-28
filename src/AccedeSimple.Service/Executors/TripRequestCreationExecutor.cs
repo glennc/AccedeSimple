@@ -24,14 +24,13 @@ public class TripRequestCreationExecutor(
         IWorkflowContext context,
         CancellationToken cancellationToken)
     {
-        // Read trip options from StateStore using the MessageId (correlation ID)
-        var stateKey = $"trip-options:{userInput.MessageId}";
+        var stateKey = $"trip-options:{userInput.TripId}";
         var options = _stateStore.GetAs<List<TripOption>>(stateKey);
 
         if (options == null)
         {
             _logger.LogError("Trip options not found in StateStore for key {StateKey}", stateKey);
-            throw new InvalidOperationException($"Trip options not found for message {userInput.MessageId}");
+            throw new InvalidOperationException($"Trip options not found for trip {userInput.TripId}");
         }
 
         // Find the selected option
@@ -43,8 +42,7 @@ public class TripRequestCreationExecutor(
             throw new InvalidOperationException($"Selected trip option {userInput.OptionId} not found");
         }
 
-        // Generate a unique trip ID
-        var tripId = Guid.NewGuid().ToString();
+        var tripId = userInput.TripId;
 
         // Create trip request directly with the selected option
         var tripRequest = new TripRequest(

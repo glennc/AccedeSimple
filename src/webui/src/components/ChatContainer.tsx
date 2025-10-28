@@ -124,13 +124,13 @@ const ChatContainer: React.FC<ChatContainerProps> = ({
     };
 
     // Function to handle itinerary selection
-    const handleItinerarySelect = (messageId: string, optionId: string) => {
+    const handleItinerarySelect = (tripId: string, optionId: string) => {
         if (selectItinerary) {
-            selectItinerary(messageId, optionId);
+            selectItinerary(tripId, optionId);
         }
     };
 
-    const renderTripOption = (option: TripOption, index: number, messageId: string) => {
+    const renderTripOption = (option: TripOption, index: number, tripId: string) => {
         return (
             <div key={option.optionId || index} className="trip-option">
                 <h3>Option {index + 1}: {option.description}</h3>
@@ -289,9 +289,9 @@ const ChatContainer: React.FC<ChatContainerProps> = ({
                 </div>
                 <div className="trip-option-total">
                     <p><strong>Total Cost: <span className="price-tag">${option.totalCost.toFixed(2)}</span></strong></p>
-                    <button 
+                    <button
                         className="select-option-button"
-                        onClick={() => handleItinerarySelect(messageId, option.optionId)}
+                        onClick={() => handleItinerarySelect(tripId, option.optionId)}
                     >
                         Select this itinerary
                     </button>
