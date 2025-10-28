@@ -42,7 +42,8 @@ public static class Endpoints
         {
             try
             {
-                // Trip requests are stored in StateStore by ProcessService when workflow reaches AdminApproval port
+                // Global list of pending trip requests (maintained in StateStore for admin page)
+                // This is cross-workflow data - NOT workflow state
                 var requests = store.GetAs<List<TripRequest>>("trip-requests") ?? new List<TripRequest>();
                 return Results.Ok(requests);
             }

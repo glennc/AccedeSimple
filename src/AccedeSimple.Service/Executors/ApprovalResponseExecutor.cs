@@ -21,18 +21,8 @@ public class ApprovalResponseExecutor(
         IWorkflowContext context,
         CancellationToken cancellationToken)
     {
-        // Read trip requests from workflow state
-        var requests = await context.ReadStateAsync<List<TripRequest>>("trip-requests", cancellationToken);
-
-        var request = requests?.FirstOrDefault(r => r.TripId == result.TripId);
-
-        if (request != null && requests != null)
-        {
-            var updatedRequests = requests.Where(r => r.TripId != result.TripId).ToList();
-            await context.QueueStateUpdateAsync("trip-requests", updatedRequests, cancellationToken);
-        }
-
         // Send the approval/rejection message to the user
+        // The result parameter contains all the information we need (TripId, status, etc.)
         var message = new TripRequestDecisionChatItem(result);
         await _messageService.AddMessageAsync(message, _userSettings.UserId);
 

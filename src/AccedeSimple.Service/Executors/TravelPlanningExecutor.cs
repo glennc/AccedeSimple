@@ -81,6 +81,10 @@ public class TravelPlanningExecutor(
 
         var options = result ?? [];
 
+        //TODO: I would like to flow the options through output types instead of using state
+        //like this if we could. Otherwise use constants or some id.
+        await context.QueueStateUpdateAsync("trip-options", options, "travel", cancellationToken);
+
         return options;
     }
 }

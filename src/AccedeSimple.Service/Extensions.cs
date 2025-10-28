@@ -20,8 +20,6 @@ public static class Extensions
         services.AddTransient<TravelPlanningExecutor>();
         services.AddTransient<TripRequestCreationExecutor>();
         services.AddTransient<ApprovalResponseExecutor>();
-        services.AddTransient<ReceiptProcessingExecutor>();
-        services.AddTransient<ExpenseReportExecutor>();
 
         // Build the main travel workflow with RequestPorts for human-in-the-loop
         // This creates a unified workflow with checkpointing support
@@ -49,23 +47,6 @@ public static class Extensions
                 .Build();
 
             return travelWorkflow;
-        });
-
-        // Register expense workflow separately as it's independent from travel
-        services.AddKeyedTransient<Microsoft.Agents.AI.Workflows.Workflow>("ExpenseWorkflow", (sp, key) =>
-        {
-            var receiptProcessing = sp.GetRequiredService<ReceiptProcessingExecutor>();
-            var expenseReport = sp.GetRequiredService<ExpenseReportExecutor>();
-
-            // Create RequestPort for user to confirm expense report generation
-            var generateReportPort = RequestPort.Create<List<ReceiptData>, object>("GenerateReportConfirmation");
-
-            // ReceiptProcessing → GenerateReportConfirmation → ExpenseReport
-            return new WorkflowBuilder(receiptProcessing)
-                .AddEdge(receiptProcessing, generateReportPort)
-                .AddEdge(generateReportPort, expenseReport)
-                .WithOutputFrom(expenseReport)
-                .Build();
         });
 
         return services;

@@ -6,6 +6,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using YamlDotNet.Serialization;
 
 namespace AccedeSimple.Service.Services;
 
@@ -88,31 +89,6 @@ public class ProcessService
                     sessionNotFoundMessage: "Sorry, I couldn't find your trip planning session. Please start over.");
                 break;
 
-            case UserIntent.ProcessReceipts when userInput is UserMessage receiptMessage:
-                // Start the expense workflow - await until it pauses at GenerateReportConfirmation RequestPort
-                var expenseSessionId = Guid.NewGuid().ToString();
-                await RunOrResumeWorkflowAsync(
-                    workflow: _serviceProvider.GetRequiredKeyedService<Microsoft.Agents.AI.Workflows.Workflow>("ExpenseWorkflow"),
-                    workflowName: "expense workflow",
-                    tripId: expenseSessionId,
-                    data: receiptMessage);
-                break;
-
-            case UserIntent.GenerateExpenseReport:
-                // Resume the expense workflow from checkpoint
-                var receiptSessionId = _stateStore.GetAs<string>($"receipt-session:{_userSettings.UserId}:latest");
-                if (receiptSessionId != null)
-                {
-                    _messageService.AddMessageAsync(new AssistantResponse("Sorry, I couldn't find your receipt processing session. Please start over."), _userSettings.UserId);
-                }
-                else
-                {
-                    await _messageService.AddMessageAsync(
-                        new AssistantResponse("No receipts have been processed yet. Please upload receipts first."),
-                        _userSettings.UserId);
-                }
-                break;
-
             default:
                 await _messageService.AddMessageAsync(new AssistantResponse("Unknown intent. Please clarify your request."), _userSettings.UserId);
                 break;
@@ -177,34 +153,29 @@ public class ProcessService
         object? response)
     {
         CheckpointInfo? lastCheckpointInfo = null;
-        bool responseSent = false;
+ 
+
+        if(response != null)
+        {
+            var pendingRequest = _stateStore.GetAs<ExternalRequest>($"pending-request:{tripId}");
+            if (pendingRequest != null && tripId != null && response != null)
+            {
+                _logger.LogInformation("Workflow in PendingRequests state at start, sending response");
+                var externalResponse = pendingRequest.CreateResponse(response);
+                await checkpointedRun.Run.SendResponseAsync(externalResponse);
+                _stateStore.Delete($"pending-request:{tripId}");
+            }
+        }
 
         // Process events
         await foreach (var evt in checkpointedRun.Run.WatchStreamAsync())
         {
             switch (evt)
             {
-                case RequestInfoEvent requestInfoEvt when tripId != null && !responseSent:
-                    // Resuming: send response to the paused RequestPort
-                    var externalResponse = requestInfoEvt.Request.CreateResponse(response!);
-                    await checkpointedRun.Run.SendResponseAsync(externalResponse);
-                    responseSent = true;
-                    break;
-
                 case RequestInfoEvent requestInfoEvt:
-                    // Hit a RequestPort - save CheckpointInfo and pause
+                    // Hit a RequestPort - handle it but continue processing events until idle
                     _logger.LogInformation("Workflow paused at RequestPort {PortId}", requestInfoEvt.Request.PortInfo.PortId);
-
                     await HandleRequestInfoAndPauseAsync(requestInfoEvt, lastCheckpointInfo, tripId);
-                    return;
-
-                case SuperStepCompletedEvent superStepEvt:
-                    _logger.LogInformation("SuperStep completed");
-                    lastCheckpointInfo = superStepEvt.CompletionInfo?.Checkpoint;
-                    break;
-
-                case ExecutorCompletedEvent executorEvt:
-                    _logger.LogInformation("Executor {ExecutorId} completed", executorEvt.ExecutorId);
                     break;
 
                 case WorkflowOutputEvent outputEvt:
@@ -227,6 +198,17 @@ public class ProcessService
                     }
                     return;
             }
+
+            lastCheckpointInfo = checkpointedRun.LastCheckpoint;
+            // After processing each event, check if the workflow is idle
+            var status = await checkpointedRun.Run.GetStatusAsync();
+            _logger.LogInformation("Current workflow status: {Status}", status);
+            if (status == RunStatus.Idle || (status == RunStatus.PendingRequests))
+            {
+                _stateStore.Set($"checkpoint-info:{lastCheckpointInfo.RunId}", lastCheckpointInfo);
+                _logger.LogInformation("Workflow idle or pending data, exiting event loop");
+                return;
+            }
         }
 
         if (tripId != null)
@@ -241,7 +223,7 @@ public class ProcessService
     public async Task ResumeWorkflowWithApprovalAsync(string tripId, TripRequestResult approvalResult)
     {
         await RunOrResumeWorkflowAsync<object>(
-            workflowKey: null,
+            workflow: _serviceProvider.GetRequiredService<Microsoft.Agents.AI.Workflows.Workflow>(),
             workflowName: "travel workflow",
             tripId: tripId,
             data: approvalResult,
@@ -264,51 +246,28 @@ public class ProcessService
             return;
         }
 
-        if (tripId != null)
+        switch (request.PortInfo.PortId)
         {
-            // Clean up trip-options from previous UserSelection pause (if any)
-            _stateStore.Delete($"trip-options:{checkpointInfo.RunId}");
-        }
-
-        if (request.PortInfo.PortId == "UserSelection")
-        {
-            // User needs to select a trip option
-            var tripOptions = request.DataAs<List<TripOption>>();
-            if (tripOptions != null)
-            {
+            case "UserSelection" when request.DataAs<List<TripOption>>() is { } tripOptions:
+                // User needs to select a trip option
                 // Create the message with RunId as its Id - this ensures consistent workflow identity
                 var candidateMessage = new CandidateItineraryChatItem("Here are trips matching your requirements.", tripOptions)
                 {
-                    Id = checkpointInfo.RunId  // Use workflow RunId (tripId) as message Id
+                    Id = checkpointInfo.RunId
                 };
-
-                // Store CheckpointInfo metadata by RunId (user will resume with this ID)
-                _stateStore.Set($"checkpoint-info:{checkpointInfo.RunId}", checkpointInfo);
-
                 // Store the ExternalRequest so we can respond when user resumes
                 _stateStore.Set($"pending-request:{checkpointInfo.RunId}", request);
 
-                // Store trip options for TripRequestCreationExecutor to access
-                _stateStore.Set($"trip-options:{checkpointInfo.RunId}", tripOptions);
-
                 // Send trip options to user
                 await _messageService.AddMessageAsync(candidateMessage, _userSettings.UserId);
-            }
-        }
-        else if (request.PortInfo.PortId == "AdminApproval")
-        {
-            // Admin needs to approve the trip request
-            var tripRequest = request.DataAs<TripRequest>();
-            if (tripRequest != null)
-            {
-                // Store CheckpointInfo metadata by RunId (tripRequest.TripId equals RunId)
-                // Use RunId explicitly for consistency
-                _stateStore.Set($"checkpoint-info:{checkpointInfo.RunId}", checkpointInfo);
+                break;
+
+            case "AdminApproval" when request.DataAs<TripRequest>() is { } tripRequest:
 
                 // Store the ExternalRequest so we can respond when admin approves/rejects
                 _stateStore.Set($"pending-request:{checkpointInfo.RunId}", request);
 
-                // Store trip request in StateStore so admin page can access it
+                // Store trip request in global StateStore list for admin page to display pending approvals
                 var existingRequests = _stateStore.GetAs<List<TripRequest>>("trip-requests") ?? new List<TripRequest>();
                 existingRequests.Add(tripRequest);
                 _stateStore.Set("trip-requests", existingRequests);
@@ -317,35 +276,11 @@ public class ProcessService
                 await _messageService.AddMessageAsync(
                     new AssistantResponse($"Trip request created. Awaiting admin approval for trip {tripRequest.TripId}."),
                     _userSettings.UserId);
-            }
-        }
-        else if (request.PortInfo.PortId == "GenerateReportConfirmation")
-        {
-            // User needs to confirm expense report generation
-            var receipts = request.DataAs<List<ReceiptData>>();
-            if (receipts != null)
-            {
-                // Generate a unique session ID for this receipt processing session
-                var receiptSessionId = Guid.NewGuid().ToString();
+                break;
 
-                // Store CheckpointInfo metadata by receiptSessionId (user will resume with this ID)
-                _stateStore.Set($"checkpoint-info:{receiptSessionId}", checkpointInfo);
-
-                // Store the ExternalRequest so we can respond when user confirms
-                _stateStore.Set($"pending-request:{receiptSessionId}", request);
-
-                // Store receipt session ID for later retrieval
-                _stateStore.Set($"receipt-session:{_userSettings.UserId}:latest", receiptSessionId);
-
-                // Send confirmation message
-                await _messageService.AddMessageAsync(
-                    new AssistantResponse($"Receipts processed. Ready to generate expense report. Say 'generate expense report' when ready."),
-                    _userSettings.UserId);
-            }
-        }
-        else
-        {
-            _logger.LogWarning("Unknown request port: {PortId}", request.PortInfo.PortId);
+            default:
+                _logger.LogWarning("Unknown request port: {PortId}", request.PortInfo.PortId);
+                break;
         }
     }
 
@@ -362,25 +297,7 @@ public class ProcessService
 
         // Remove common checkpoint data
         _stateStore.Delete($"checkpoint-info:{tripId}");
-        _stateStore.Delete($"pending-request:{tripId}");
-
-        // Cleanup workflow-specific data based on what exists in state
-        // Travel workflow: trip-options, trip-requests
-        _stateStore.Delete($"trip-options:{tripId}");
-        var tripRequests = _stateStore.GetAs<List<TripRequest>>("trip-requests");
-        if (tripRequests != null)
-        {
-            tripRequests.RemoveAll(tr => tr.TripId == tripId);
-            _stateStore.Set("trip-requests", tripRequests);
-        }
-
-        // Expense workflow: receipt-session
-        var receiptSessionKey = $"receipt-session:{_userSettings.UserId}:latest";
-        var storedReceiptSessionId = _stateStore.GetAs<string>(receiptSessionKey);
-        if (storedReceiptSessionId == tripId)
-        {
-            _stateStore.Delete(receiptSessionKey);
-        }
+        _stateStore.Delete("trip-requests");
 
         await Task.CompletedTask;
     }

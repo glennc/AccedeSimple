@@ -2,7 +2,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using AccedeSimple.Domain;
-using AccedeSimple.Service.Services;
 using Microsoft.Extensions.Options;
 using Microsoft.Agents.AI.Workflows;
 
@@ -11,12 +10,10 @@ namespace AccedeSimple.Service.Executors;
 public class TripRequestCreationExecutor(
     IChatClient chatClient,
     IOptions<UserSettings> userSettings,
-    StateStore stateStore,
     ILogger<TripRequestCreationExecutor> logger) : Executor<ItinerarySelectedChatItem, TripRequest>("TripRequestCreationExecutor")
 {
     private readonly UserSettings _userSettings = userSettings.Value;
     private readonly IChatClient _chatClient = chatClient;
-    private readonly StateStore _stateStore = stateStore;
     private readonly ILogger<TripRequestCreationExecutor> _logger = logger;
 
     public override async ValueTask<TripRequest> HandleAsync(
@@ -24,12 +21,12 @@ public class TripRequestCreationExecutor(
         IWorkflowContext context,
         CancellationToken cancellationToken)
     {
-        var stateKey = $"trip-options:{userInput.TripId}";
-        var options = _stateStore.GetAs<List<TripOption>>(stateKey);
+        // Read trip options from workflow state
+        var options = await context.ReadStateAsync<List<TripOption>>("trip-options", "travel", cancellationToken);
 
         if (options == null)
         {
-            _logger.LogError("Trip options not found in StateStore for key {StateKey}", stateKey);
+            _logger.LogError("Trip options not found in workflow state");
             throw new InvalidOperationException($"Trip options not found for trip {userInput.TripId}");
         }
 
@@ -50,9 +47,6 @@ public class TripRequestCreationExecutor(
             TripOption: selectedOption,
             AdditionalNotes: null
         );
-
-        // Clean up trip options from StateStore
-        _stateStore.Delete(stateKey);
 
         return tripRequest;
     }
