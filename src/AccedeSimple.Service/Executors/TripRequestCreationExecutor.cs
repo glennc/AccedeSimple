@@ -1,5 +1,3 @@
-#pragma warning disable
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 using AccedeSimple.Domain;
 using Microsoft.Extensions.Options;
@@ -8,12 +6,8 @@ using Microsoft.Agents.AI.Workflows;
 namespace AccedeSimple.Service.Executors;
 
 public class TripRequestCreationExecutor(
-    IChatClient chatClient,
-    IOptions<UserSettings> userSettings,
     ILogger<TripRequestCreationExecutor> logger) : Executor<ItinerarySelectedChatItem, TripRequest>("TripRequestCreationExecutor")
 {
-    private readonly UserSettings _userSettings = userSettings.Value;
-    private readonly IChatClient _chatClient = chatClient;
     private readonly ILogger<TripRequestCreationExecutor> _logger = logger;
 
     public override async ValueTask<TripRequest> HandleAsync(
@@ -51,4 +45,3 @@ public class TripRequestCreationExecutor(
         return tripRequest;
     }
 }
-#pragma warning restore

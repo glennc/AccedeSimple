@@ -1,4 +1,3 @@
-#pragma warning disable
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using AccedeSimple.Domain;
@@ -88,4 +87,3 @@ public class TravelPlanningExecutor(
         return options;
     }
 }
-#pragma warning restore
