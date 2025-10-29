@@ -34,6 +34,7 @@
   <ItemGroup>
     <ProjectReference Include="..\AccedeSimple.Domain\AccedeSimple.Domain.csproj" />
     <ProjectReference Include="..\AccedeSimple.ServiceDefaults\AccedeSimple.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\..\..\..\dataingestion\src\Microsoft.Extensions.DataIngestion\Microsoft.Extensions.DataIngestion.csproj" />
   </ItemGroup>
 
   <ItemGroup>
