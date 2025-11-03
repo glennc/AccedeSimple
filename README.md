@@ -51,7 +51,7 @@ To run the application, ensure the following tools and frameworks are installed:
 - [UV](https://docs.astral.sh/uv/)
 - [Visual Studio Code](https://code.visualstudio.com/)
 - [Azure AI Foundry Project](https://learn.microsoft.com/azure/ai-foundry/how-to/create-projects) within the above subscription and resource group (and within an AI Foundry Hub) that can be used for content safety evaluations. See [Setting Up Azure AI Foundry for Safety Evaluations](https://devblogs.microsoft.com/dotnet/evaluating-ai-content-safety/#setting-up-azure-ai-foundry-for-safety-evaluations).
-   - [Azure OpenAI Resource](https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource?pivots=web-portal) with the `gpt-4.1` and `text-embedding-3-small` model deployed and [permissions](https://learn.microsoft.com/azure/ai-services/openai/how-to/role-based-access-control).
+   - [Azure OpenAI Resource](https://learn.microsoft.com/azure/ai-services/openai/how-to/create-resource?pivots=web-portal) with the `gpt-4.1`, `gpt-4o-mini`, and `text-embedding-3-small` models deployed and [permissions](https://learn.microsoft.com/azure/ai-services/openai/how-to/role-based-access-control).
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd?tabs=winget-windows%2Cbrew-mac%2Cscript-linux&pivots=os-windows) (if applicable)
 - [Docker Desktop](https://docker.com) for local deployment
 
@@ -81,7 +81,7 @@ To run the application, ensure the following tools and frameworks are installed:
    ```
 
 1. **Set up your Azure resources**
-In your Azure subscription, create the following:
+In your Azure subscription (make note of the ID), create the following:
 - An Azure Resource Group (make note of the name) 
 - AI Foundry Project (make note of the name, endpoint, and region)
    - Choose to use Azure Identity or Tokens
