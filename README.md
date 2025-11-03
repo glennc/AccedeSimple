@@ -81,7 +81,7 @@ To run the application, ensure the following tools and frameworks are installed:
    ```
 
 1. **Set up your Azure resources**
-In your Azure subscription (make note of the ID), create the following:
+In your Azure subscription create the following (as noted above):
 - An Azure Resource Group (make note of the name) 
 - AI Foundry Project (make note of the name, endpoint, and region)
    - Choose to use Azure Identity or Tokens
@@ -89,7 +89,7 @@ In your Azure subscription (make note of the ID), create the following:
   - `gpt-4o-mini`
   - `gpt-4.1`
   - `text-embedding-3-small`
-
+- Make note note of your subscription ID 
 
 1. **Configure user secrets**
 
