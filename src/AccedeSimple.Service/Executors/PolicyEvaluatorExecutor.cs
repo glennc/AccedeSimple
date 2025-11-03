@@ -24,8 +24,9 @@ internal class PolicyEvaluatorExecutor(MessageService messageService, IOptions<U
                 Id = tripId
             };
             
-            // Store the trip options in StateStore so we can retrieve them when user selects
+            // Store both the trip options AND the full TripPlanner for refinements
             stateStore.Set($"trip-options:{tripId}", trip.TripOptions);
+            stateStore.Set($"trip-planner:{tripId}", trip);
 
             // Send trip options to user
             await messageService.AddMessageAsync(candidateMessage, userSettings.Value.UserId);

@@ -11,7 +11,6 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
-using Microsoft.SemanticKernel;
 using OpenTelemetry.Trace;
 using TextContent = Microsoft.Extensions.AI.TextContent;
 
@@ -94,7 +93,6 @@ public static class Endpoints
 
     private static void MapChatEndpoints(this RouteGroupBuilder group)
     {
-
         // Stream responses back to the client
         group.MapGet("/stream", async (
             int? startIndex, 
@@ -149,7 +147,6 @@ public static class Endpoints
             }
         });
 
-
         // Handle incoming messages
         group.MapPost("/messages", async (
             HttpRequest request,
@@ -158,11 +155,11 @@ public static class Endpoints
             [FromServices] MessageService messageService,
             [FromServices] ProcessService processService,
             [FromServices] ChatStream chatStream,
+            [FromServices] StateStore stateStore,
             [FromServices] IOptions<UserSettings> userSettings,
-            [FromKeyedServices("TravelWorkflowV2")] Microsoft.Agents.AI.Workflows.Workflow travelWorkflow,
+            [FromKeyedServices("TravelWorkflowV2")] Workflow travelWorkflow,
             CancellationToken cancellationToken) => 
         {
-
             // Read request body
             var bodyText = request.Form["Text"].FirstOrDefault() ?? "";
             var uploads = await GetFileUploads(userSettings.Value.UserId, request, blobServiceClient, cancellationToken);
@@ -176,6 +173,7 @@ public static class Endpoints
             
             await messageService.AddMessageAsync(userMessage, userSettings.Value.UserId);
 
+            // Always run the workflow from the start - executors will detect if there's an active session
             var run = await InProcessExecution.RunAsync(travelWorkflow, userMessage.ToChatMessage(), cancellationToken: cancellationToken);
 
             return Results.Ok();

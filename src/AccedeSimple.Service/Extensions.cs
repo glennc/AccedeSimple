@@ -58,6 +58,7 @@ public static class Extensions
             var travelPlanning = sp.GetRequiredService<TravelPlanningExecutor>();
             var policyEvaluatorExecutor = sp.GetRequiredService<PolicyEvaluatorExecutor>();
 
+            // Simple linear workflow - executors handle refinement vs new trip internally
             var workflow = new WorkflowBuilder(policyExecutor)
                 .AddEdge(policyExecutor, travelPlanning)
                 .AddEdge(travelPlanning, policyEvaluatorExecutor)
