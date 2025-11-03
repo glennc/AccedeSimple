@@ -17,5 +17,8 @@
 - [X] Set up Aspire Hosting for AI Models
 - [X] Fix data generation
 - [X] Fix deployment
+- [ ] Add Evals
 - [X] Fix Python .NET requests
+- [ ] Add Python OTEL
 - [X] Figure out state issue [#1](https://github.com/luisquintanilla/AccedeSimple/issues/1)
+- [ ] Set up persistent storage for state
