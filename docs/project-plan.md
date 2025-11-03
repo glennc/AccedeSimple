@@ -1,7 +1,5 @@
 # Project Plan
 
-## ✅ Completed Tasks
-
 - [X] Create agent to trigger workflows
 - [X] Refactor into web service
 - [X] Add Aspire
