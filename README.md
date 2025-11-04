@@ -92,13 +92,6 @@ In your Azure subscription create the following (as noted above):
 - Make note note of your subscription ID 
 
 1. **Configure user secrets**
-
-   **Option A: Using the setup script (recommended)**
-   
-   1. Copy the example `secrets.txt.example` file to `secrets.txt` and add your actual Azure values.
-   1. Run setup secrets script: `./scripts/set-secrets.sh|cmd|ps1`
-      
-   **Option B: Manual configuration**
    
    1. Navigate to the *_src/AccedeSimple.AppHost* project
    1. Set each secret individually using: `dotnet user-secrets set "KEY" "VALUE"`
