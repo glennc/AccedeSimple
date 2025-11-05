@@ -32,7 +32,7 @@ var mcpServer =
 
 
 var pythonApp =
-    builder.AddPythonApp("localguide", "../localguide", "main.py")
+    builder.AddPythonScript("localguide", "../localguide", "main.py")
         .WithHttpEndpoint(env: "PORT", port: 8000, isProxied: false)
         .WithEnvironment("AZURE_OPENAI_ENDPOINT", azureOpenAIEndpoint)
         .WithEnvironment("MODEL_NAME", modelName)
@@ -59,8 +59,7 @@ var backend =
         .WithEnvironment("AZURE_AI_FOUNDRY_PROJECT", azureAIFoundryProject)
         .WaitFor(openai);
 
-builder.AddNpmApp("webui", "../webui")
-    .WithNpmPackageInstallation()
+builder.AddJavaScriptApp("webui", "../webui")
     .WithHttpEndpoint(env: "PORT", port: 35_369, isProxied: false)
     .WithEnvironment("BACKEND_URL", backend.GetEndpoint("http"))
     .WithExternalHttpEndpoints()

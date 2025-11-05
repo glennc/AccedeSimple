@@ -1,15 +1,16 @@
 namespace AccedeSimple.Domain;
 
 using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 
 [Description("Parameters defining a trip's basic requirements")]
 public record TripParameters(
-    [Description("User ID making the request")] string UserId,
-    [Description("Origin location for the trip")] Location Origin,
-    [Description("Destination location for the trip")] Location Destination,
-    [Description("Starting date of the trip. Use ISO 8601 format.")] DateTime StartDate,
-    [Description("Ending date of the trip. Use ISO 8601 format.")] DateTime EndDate,
-    [Description("Essential travel requirements")] TravelRequirements Requirements,
+    [Description("User ID making the request")] [Required] string UserId,
+    [Description("Origin location for the trip")] [Required] Location Origin,
+    [Description("Destination location for the trip")] [Required] Location Destination,
+    [Description("Starting date of the trip. Use ISO 8601 format.")] [Required] DateTime StartDate,
+    [Description("Ending date of the trip. Use ISO 8601 format.")] [Required] DateTime EndDate,
+    [Description("Essential travel requirements")] [Required] TravelRequirements Requirements,
     [Description("Optional travel preferences")] TravelPreferences? Preferences = null,
     [Description("Maximum budget for the trip")] decimal? MaxBudget = null
 );
