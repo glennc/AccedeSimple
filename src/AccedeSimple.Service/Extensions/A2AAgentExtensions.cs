@@ -28,7 +28,7 @@ public static class A2AAgentExtensions
         ArgumentNullException.ThrowIfNull(a2aServiceUri);
 
         //Force activation of the LocalGuide agent at startup.
-        builder.Services.ActivateKeyedSingleton<AIAgent>("LocalGuide");
+        builder.Services.ActivateKeyedSingleton<AIAgent>(name);
 
         // Register the A2A agent using the factory pattern
         return builder.AddAIAgent(name, (sp, agentName) =>
@@ -64,7 +64,7 @@ public static class A2AAgentExtensions
         ArgumentNullException.ThrowIfNull(a2aServiceUri);
 
         //Force activation of the LocalGuide agent at startup.
-        builder.Services.ActivateKeyedSingleton<AIAgent>("LocalGuide");
+        builder.Services.ActivateKeyedSingleton<AIAgent>(name);
 
         // Register the A2A agent using the factory pattern with existing HttpClient
         return builder.AddAIAgent(name, (sp, agentName) =>
@@ -104,7 +104,7 @@ public static class A2AAgentExtensions
         }).ConfigureHttpClient(configureHttpClient);
 
         //Force activation of the LocalGuide agent at startup.
-        builder.Services.ActivateKeyedSingleton<AIAgent>("LocalGuide");
+        builder.Services.ActivateKeyedSingleton<AIAgent>(name);
 
         // Register the A2A agent using the factory pattern
         return builder.AddAIAgent(name, (sp, agentName) =>
