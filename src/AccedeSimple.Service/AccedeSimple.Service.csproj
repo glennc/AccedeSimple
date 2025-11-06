@@ -21,6 +21,7 @@
     <PackageReference Include="Microsoft.Extensions.AI.Evaluation" Version="9.10.0" />
     <PackageReference Include="Microsoft.Extensions.AI.Evaluation.Reporting" Version="9.10.0" />
     <PackageReference Include="Microsoft.Extensions.AI.Evaluation.Safety" Version="9.10.0-preview.1.25513.3" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="1.0.2" />
     <PackageReference Include="Microsoft.SemanticKernel.Process.Core" Version="1.67.0-alpha" />
     <PackageReference Include="Microsoft.SemanticKernel.Process.LocalRuntime" Version="1.67.0-alpha" />
     <PackageReference Include="ModelContextProtocol" Version="0.4.0-preview.3" />
