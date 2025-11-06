@@ -9,6 +9,7 @@ namespace AccedeSimple.Service.Services;
 public class IngestionService(
     VectorStore vectorStore,
     ILoggerFactory loggerFactory,
+    ILogger<IngestionService> logger,
     PdfPigReader reader,
     Tokenizer tokenizer,
     IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator)
@@ -31,10 +32,18 @@ public class IngestionService(
         // Create and configure the pipeline
         using var pipeline = new IngestionPipeline<string>(reader, chunker, writer, loggerFactory: loggerFactory);
 
-        // Add document processors to clean up the documents
-        pipeline.DocumentProcessors.Add(RemovalProcessor.EmptySections);
-
         // Process all PDF files in the directory
-        await pipeline.ProcessAsync(new DirectoryInfo(sourceDirectory), "*.pdf");
+        await foreach( var result in pipeline.ProcessAsync(new DirectoryInfo(sourceDirectory), "*.pdf"))
+        {
+            if (result.Succeeded)
+            {
+                //TODO: There is a PR out that would change this to result.DocumentId instead.
+                logger.LogInformation("Ingested document: {Document}", result.Document?.Identifier);
+            }
+            else
+            {
+                logger.LogError("Failed to ingest document: {Error}", result.Exception);
+            }
+        }
     }
 }
