@@ -1,8 +1,6 @@
-#pragma warning disable
 using AccedeSimple.Domain;
 using Microsoft.Extensions.AI;
 using Microsoft.Agents.AI.Hosting;
-using Microsoft.SemanticKernel;
 using AccedeSimple.Service;
 using System.Collections.Concurrent;
 using AccedeSimple.Service.Services;
@@ -10,6 +8,7 @@ using Microsoft.Extensions.VectorData;
 using Microsoft.SemanticKernel.Connectors.SqliteVec;
 using Microsoft.Agents.AI;
 using AccedeSimple.Service.Extensions;
+using Microsoft.ML.Tokenizers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,17 +32,30 @@ builder.AddServiceDefaults();
 
 builder.Services.AddMcpClient();
 
-var kernel = builder.Services.AddKernel();
-
-kernel.Services
+builder.Services
     .AddChatClient(modelName: Environment.GetEnvironmentVariable("MODEL_NAME") ?? "gpt-4o-mini")
     .UseFunctionInvocation();
 
-kernel.Services.AddEmbeddingGenerator(modelName: "text-embedding-3-small");
-kernel.Services.AddSqliteCollection<int, Document>("Documents", "Data Source=documents.db");
-kernel.Services.AddTransient<ProcessService>();
-kernel.Services.AddTransient<MessageService>();
-kernel.Services.AddSingleton<SearchService>();
+builder.Services.AddEmbeddingGenerator(modelName: EmbeddingModel.NAME);
+
+// Add SQLite vector store
+builder.Services.AddSingleton<VectorStore>(sp =>
+{
+    var embeddingGenerator = sp.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>();
+    return new SqliteVectorStore("Data Source=documents.db", new()
+    {
+        EmbeddingGenerator = embeddingGenerator
+    });
+});
+
+// Register ingestion pipeline components
+builder.Services.AddSingleton<PdfPigReader>();
+builder.Services.AddSingleton<Tokenizer>(sp => TiktokenTokenizer.CreateForModel("gpt-4"));
+
+builder.Services.AddTransient<ProcessService>();
+builder.Services.AddTransient<MessageService>();
+builder.Services.AddSingleton<SearchService>();
+builder.Services.AddSingleton<IngestionService>();
 
 builder.AddAIAgent("Policy", (sp, name) =>
 {
@@ -65,18 +77,16 @@ builder.Services.AddTravelWorkflow();
 
 var app = builder.Build();
 
-var k = app.Services.GetRequiredService<Kernel>();
-var collection = k.GetRequiredService<VectorStoreCollection<int, Document>>();
-var IngestionService = new IngestionService(collection);
-await IngestionService.IngestAsync(Path.Combine(AppContext.BaseDirectory, "docs"));
+// Run ingestion on startup
+var ingestionService = app.Services.GetRequiredService<IngestionService>();
+await ingestionService.IngestAsync(Path.Combine(AppContext.BaseDirectory, "docs"));
 
 app.MapEndpoints();
 
 app.Run();
 
-public class UserSettings
+public static class EmbeddingModel
 {
-    public string UserId { get; set; }
-    public string AdminUserId { get; set; }
-
+    public const string NAME = "text-embedding-3-small";
+    public const int DIMENSION = 1536;
 }

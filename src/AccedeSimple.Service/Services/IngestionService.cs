@@ -1,83 +1,49 @@
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DataIngestion;
+using Microsoft.Extensions.DataIngestion.Chunkers;
 using Microsoft.Extensions.VectorData;
-using Microsoft.SemanticKernel.Text;
-using UglyToad.PdfPig;
-using UglyToad.PdfPig.Content;
-using UglyToad.PdfPig.DocumentLayoutAnalysis.PageSegmenter;
-using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
+using Microsoft.ML.Tokenizers;
 
 namespace AccedeSimple.Service.Services;
 
-public class IngestionService
+public class IngestionService(
+    VectorStore vectorStore,
+    ILoggerFactory loggerFactory,
+    ILogger<IngestionService> logger,
+    PdfPigReader reader,
+    Tokenizer tokenizer,
+    IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator)
 {
-    private readonly VectorStoreCollection<int, Document> _collection;
-    public IngestionService(VectorStoreCollection<int, Document> collection)
-    {
-        _collection = collection;
-    }
-
     public async Task IngestAsync(string sourceDirectory)
     {
-        await _collection.EnsureCollectionExistsAsync();
-        var sourceFiles = Directory.GetFiles(sourceDirectory, "*.pdf");
-
-        foreach (var file in sourceFiles)
+        // Create semantic chunker - groups content by topic similarity
+        var chunkerOptions = new IngestionChunkerOptions(tokenizer)
         {
-            using var pdf = PdfDocument.Open(Path.Combine(sourceDirectory, file));
-            var paragraphs = pdf.GetPages().SelectMany(GetPageParagraphs).ToList();
+            MaxTokensPerChunk = 512,
+            OverlapTokens = 50        // Small overlap to preserve context at boundaries
+        };
+        var chunker = new SemanticSimilarityChunker(
+            embeddingGenerator,
+            chunkerOptions);
 
-            var documents =
-                paragraphs
-                    .Select((p, i) =>
-                    {
-                        return new Document
-                        {
-                            Id = i,
-                            FileName = Path.GetFileName(file),
-                            PageNumber = p.PageNumber,
-                            IndexOnPage = p.IndexOnPage,
-                            Text = p.Text,
-                            Embedding = p.Text
-                        };
-                    })
-                    .ToList();
+        // Create writer. dimensionCount must match the model that is being used to generate embeddings.
+        using var writer = new VectorStoreWriter<string>(vectorStore, dimensionCount: EmbeddingModel.DIMENSION);
 
-            await _collection.UpsertAsync(documents);
+        // Create and configure the pipeline
+        using var pipeline = new IngestionPipeline<string>(reader, chunker, writer, loggerFactory: loggerFactory);
+
+        // Process all PDF files in the directory
+        await foreach( var result in pipeline.ProcessAsync(new DirectoryInfo(sourceDirectory), "*.pdf"))
+        {
+            if (result.Succeeded)
+            {
+                //TODO: There is a PR out that would change this to result.DocumentId instead.
+                logger.LogInformation("Ingested document: {Document}", result.Document?.Identifier);
+            }
+            else
+            {
+                logger.LogError("Failed to ingest document: {Error}", result.Exception);
+            }
         }
     }
-
-    private IEnumerable<(int PageNumber, int IndexOnPage, string Text)> GetPageParagraphs(Page pdfPage)
-    {
-        var letters = pdfPage.Letters;
-        var words = NearestNeighbourWordExtractor.Instance.GetWords(letters);
-        var textBlocks = DocstrumBoundingBoxes.Instance.GetBlocks(words);
-        var pageText = string.Join(Environment.NewLine + Environment.NewLine,
-            textBlocks.Select(t => t.Text.ReplaceLineEndings(" ")));
-
-        #pragma warning disable SKEXP0050
-        return TextChunker.SplitPlainTextParagraphs([pageText], 200)
-            .Select((text, index) => (pdfPage.Number, index, text));
-        #pragma warning restore SKEXP0050
-    }
-
-}
-
-public record class Document
-{
-    [VectorStoreKey]
-    public int Id { get; set; }
-
-    [VectorStoreData]
-    public required string FileName { get; set; }
-
-    [VectorStoreData]
-    public int PageNumber { get; set; }
-
-    [VectorStoreData]
-    public int IndexOnPage { get; set; }
-
-    [VectorStoreData]
-    public string? Text { get; set; }
-
-    [VectorStoreVector(Dimensions: 1536)]
-    public string? Embedding { get; set; }
 }
